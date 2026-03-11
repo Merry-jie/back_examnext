@@ -3,7 +3,6 @@ import os
 import psycopg2
 import requests
 from http.server import BaseHTTPRequestHandler, HTTPServer
-import traceback
 
 # ==============================
 # CONFIG
@@ -63,67 +62,51 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         response = {}
-        status = 200
         try:
-            # Lire le corps
             length = int(self.headers.get("Content-Length", 0))
-            if length == 0:
-                raise ValueError("Corps de la requête vide")
-
             body = self.rfile.read(length)
             data = json.loads(body) if body else {}
 
             # ===== DEBUG =====
-            print("DEBUG data reçue:")
-            print(json.dumps(data, indent=2)[:1000])  # tronqué pour lisibilité
+            print("DEBUG data reçue:", data)
 
             # ===== Vérifier les champs obligatoires =====
-            required_fields = [
-                "nom", "email", "telephone", "date_naissance",
-                "lieu_naissance", "cisco_zap", "examen",
-                "lieu_de_service_et_etablissement", "document"
-            ]
+            required_fields = ["nom","email","telephone","date_naissance",
+                               "lieu_naissance","cisco_zap","examen",
+                               "lieu_de_service_et_etablissement","document"]
             for f in required_fields:
                 if f not in data or not data[f]:
                     raise ValueError(f"Le champ '{f}' est obligatoire")
 
             doc = data["document"]
-            if not isinstance(doc, dict):
-                raise ValueError("Le champ 'document' doit être un objet")
-            if "name" not in doc or not doc["name"]:
-                raise ValueError("Le nom du document est manquant")
-            if "content" not in doc or not doc["content"]:
-                raise ValueError("Le contenu du document est manquant")
-
-            # (Optionnel) Vérifier la taille approximative du base64
-            if len(doc["content"]) > 7 * 1024 * 1024:  # ~5 Mo en binaire → ~7 Mo en base64
-                raise ValueError("Le contenu du document est trop volumineux (max 5 Mo après décodage)")
+            if "name" not in doc or "content" not in doc:
+                raise ValueError("Le champ 'document' doit contenir 'name' et 'content'")
 
             # ===== INSERER DANS LA DB =====
             conn = get_conn()
             cur = conn.cursor()
             cur.execute("""
                 INSERT INTO inscriptions
-                (nom, email, telephone, date_naissance,
-                 lieu_naissance, cisco_zap, examen, lieu_de_service_et_etablissement, document)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                (nom,email,telephone,date_naissance,
+                 lieu_naissance,cisco_zap,examen,lieu_de_service_et_etablissement,document)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 RETURNING id, nom, examen;
             """, (
-                data["nom"],
-                data["email"],
-                data["telephone"],
-                data["date_naissance"],
-                data["lieu_naissance"],
-                data["cisco_zap"],
-                data["examen"],
-                data["lieu_de_service_et_etablissement"],
+                data.get("nom"),
+                data.get("email"),
+                data.get("telephone"),
+                data.get("date_naissance"),
+                data.get("lieu_naissance"),
+                data.get("cisco_zap"),
+                data.get("examen"),
+                data.get("lieu_de_service_et_etablissement"),
                 json.dumps(doc)
             ))
             new_id, nom, examen = cur.fetchone()
             conn.commit()
             cur.close()
             conn.close()
-            print(f"Nouvelle inscription #{new_id} pour {nom} ({examen})")
+            print(f"Nouvelle inscription #{new_id}")
 
             # ===== ENVOI STACKAI =====
             if STACKAI_WEBHOOK:
@@ -139,23 +122,16 @@ class Handler(BaseHTTPRequestHandler):
 
             response = {"success": True, "message": "Votre dossier est bien reçu"}
 
-        except json.JSONDecodeError:
-            response = {"success": False, "message": "JSON invalide"}
-            status = 400
         except ValueError as ve:
             response = {"success": False, "message": str(ve)}
-            status = 400
         except psycopg2.errors.UniqueViolation:
             conn.rollback()
             response = {"success": False, "message": "Vous êtes déjà inscrit pour cet examen."}
-            status = 409
         except Exception as e:
             print("Erreur serveur:", e)
-            traceback.print_exc()
-            response = {"success": False, "message": "Erreur serveur interne"}
-            status = 500
+            response = {"success": False, "message": "Erreur serveur"}
 
-        self.send_response(status)
+        self.send_response(200)
         self._cors()
         self.send_header("Content-Type", "application/json")
         self.end_headers()
